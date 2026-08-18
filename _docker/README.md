@@ -1,0 +1,2 @@
+# Plugin Host
+This application serves as a host for micro-frontend plugins in the Gaeco ecosystem. It consists of a .NET backend server and a React frontend client for managing and loading micro-frontend plugins.

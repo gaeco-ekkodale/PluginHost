@@ -1,0 +1,142 @@
+# Copyright (c) 2025 Ekkodale GmbH. All rights reserved.
+#
+# This file is part of the gaeco platform system.
+#
+# Use of this file is governed by the terms of the license
+# in LICENSE.md at the root of this repository.
+# Unauthorized copying, modification, distribution, or use of this file,
+# via any medium, is strictly prohibited except as expressly permitted
+# under that license.
+
+name: pluginhost
+services:
+  # ==========================================================================
+  # 1. INFRASTRUCTURE SERVICES
+  # ==========================================================================
+
+  # --------------------------------------------------------------------------
+  # PostgreSQL Database for PluginHost
+  # --------------------------------------------------------------------------
+
+  pluginhost-postgres:
+    image: postgres:14
+    restart: always
+    environment:
+      POSTGRES_USER: ${PLUGINHOST_POSTGRES_USER}
+      POSTGRES_PASSWORD: ${PLUGINHOST_POSTGRES_PASSWORD}
+      POSTGRES_DB: ${PLUGINHOST_POSTGRES_DATABASE}
+    expose:
+      - 5432
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "pg_isready",
+          "-q",
+          "-h",
+          "127.0.0.1",
+          "-d",
+          "${PLUGINHOST_POSTGRES_DATABASE}",
+          "-U",
+          "${PLUGINHOST_POSTGRES_USER}",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 50
+      start_period: 30s
+    volumes:
+      # Long "type: bind" form so `docker compose config --no-path-resolution` keeps
+      # the ${VOLUME_BASE_PATH} source intact (short form gets mis-typed as a volume).
+      - type: bind
+        source: ${VOLUME_BASE_PATH}/pluginhost/postgres/
+        target: /var/lib/postgresql/data
+    networks:
+      - internal
+
+  # ==========================================================================
+  # 2. APPLICATION SERVICES
+  # ==========================================================================
+
+  pluginhost-server:
+    image: ${IMAGE_BASE_PATH}/pluginhost-server:${PLUGINHOST_SERVER_TAG}
+    expose:
+      - 80
+    environment:
+      PluginJwt__Issuer: https://${PLUGINHOST_SERVER_HOSTNAME}
+      PluginJwt__Secret: ${PLUGINHOST_SERVER_GETPLUGIN_SECRET}
+      Keycloak__Host: https://${KEYCLOAK_SERVER_HOSTNAME}
+      Keycloak__Realm: ${KEYCLOAK_REALM}
+      Keycloak__ClientId: ${KEYCLOAK_SERVER_CLIENT_ID}
+      Keycloak__ClientSecret: ${KEYCLOAK_SERVER_CLIENT_SECRET}
+      SignalRMessaging__PluginEvent: ${PLUGINHOST_SIGNALR_PLUGIN_EVENT}
+      SignalRMessaging__Operation__AddPlugin: ${PLUGINHOST_SIGNALR_OPERATION_ADD_PLUGIN}
+      SignalRMessaging__Operation__DeletePlugin: ${PLUGINHOST_SIGNALR_OPERATION_DELETE_PLUGIN}
+      SignalRMessaging__Operation__PatchPlugins: ${PLUGINHOST_SIGNALR_OPERATION_PATCH_PLUGINS}
+      Postgres__Host: pluginhost-postgres
+      Postgres__Port: 5432
+      Postgres__Database: ${PLUGINHOST_POSTGRES_DATABASE}
+      Postgres__User: ${PLUGINHOST_POSTGRES_USER}
+      Postgres__Password: ${PLUGINHOST_POSTGRES_PASSWORD}
+      SnapshotApiKey__HeaderName: X-API-Key
+      SnapshotApiKey__ApiKey: change-me
+    depends_on:
+      pluginhost-postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "bash",
+          "-c",
+          "exec 3<>/dev/tcp/localhost/80 && echo -e 'GET /health HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && cat <&3 | grep -q '200 OK'",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 50
+    networks:
+      - internal
+      - gaeco-network
+      - traefik-proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik-proxy"
+      - "traefik.http.routers.${STACK_NAME}-server.rule=Host(`${PLUGINHOST_SERVER_HOSTNAME}`)"
+      - "traefik.http.routers.${STACK_NAME}-server.entrypoints=https"
+      - "traefik.http.routers.${STACK_NAME}-server.tls.certresolver=letsencrypt"
+      - "traefik.http.services.${STACK_NAME}-server.loadbalancer.server.port=80"
+      - "orchestrator.host=true"
+      - "orchestrator.apiKey=change-me"
+
+  pluginhost-client:
+    image: ${IMAGE_BASE_PATH}/pluginhost-client:${PLUGINHOST_CLIENT_TAG}
+    expose:
+      - 80
+    environment:
+      - VITE_HOST_API_URL=https://${PLUGINHOST_SERVER_HOSTNAME}
+      - VITE_KEYCLOAK_URL=https://${KEYCLOAK_SERVER_HOSTNAME}
+      - VITE_KEYCLOAK_REALM=${KEYCLOAK_REALM}
+      - VITE_KEYCLOAK_CLIENT_ID=${KEYCLOAK_CLIENT_CLIENT_ID}
+      - VITE_SIGNALR_PATH=${PLUGINHOST_SIGNALR_HUB_PATH}
+      - VITE_SIGNALR_PLUGIN_EVENT=${PLUGINHOST_SIGNALR_PLUGIN_EVENT}
+      - VITE_SIGNALR_OPERATION_ADD_PLUGIN=${PLUGINHOST_SIGNALR_OPERATION_ADD_PLUGIN}
+    depends_on:
+      pluginhost-server:
+        condition: service_healthy
+    networks:
+      - traefik-proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik-proxy"
+      - "traefik.http.routers.${STACK_NAME}-client.rule=Host(`${PLUGINHOST_CLIENT_HOSTNAME}`)"
+      - "traefik.http.routers.${STACK_NAME}-client.entrypoints=https"
+      - "traefik.http.routers.${STACK_NAME}-client.tls.certresolver=letsencrypt"
+      - "traefik.http.services.${STACK_NAME}-client.loadbalancer.server.port=80"
+
+networks:
+  internal:
+  gaeco-network:
+    name: ${ENVIRONMENT_NETWORK}
+    external: true
+  traefik-proxy:
+    name: ${TRAEFIK_NETWORK}
+    external: true
